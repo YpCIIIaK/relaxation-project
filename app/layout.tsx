@@ -8,7 +8,7 @@ const _geist = Geist({ subsets: ["latin"] })
 const _geistMono = Geist_Mono({ subsets: ["latin"] })
 
 export const metadata: Metadata = {
-  title: "Neural Canvas - Interactive Relaxation Studio",
+  title: "Nexus - Award-Winning Digital Experiences",
   description: "Crafting immersive digital experiences with cutting-edge design and technology",
   generator: "v0.app",
 }

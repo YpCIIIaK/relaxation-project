@@ -14,8 +14,6 @@ import {
   Pause,
   Settings2,
   Maximize,
-  Volume2,
-  VolumeX,
   EyeOff,
   RefreshCw,
 } from "lucide-react"
@@ -48,42 +46,17 @@ export function NeuralCanvas() {
   const [gravity, setGravity] = useState([0])
   const [autoRotate, setAutoRotate] = useState(false)
   const [breathingMode, setBreathingMode] = useState(false)
-  const [ambientSound, setAmbientSound] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [primaryHue, setPrimaryHue] = useState([180])
   const [secondaryHue, setSecondaryHue] = useState([280])
   const [useCustomColors, setUseCustomColors] = useState(false)
+  const [enableTrails, setEnableTrails] = useState(true)
+  const [fadeSpeed, setFadeSpeed] = useState([18])
+  const [bgColor, setBgColor] = useState({ r: 0, g: 0, b: 0 })
   const particlesRef = useRef<Particle[]>([])
   const mouseRef = useRef({ x: 0, y: 0, isDown: false })
   const animationRef = useRef<number>()
-  const audioRef = useRef<HTMLAudioElement | null>(null)
   const breathingRef = useRef({ phase: 0, scale: 1 })
-
-  useEffect(() => {
-    audioRef.current = new Audio()
-    audioRef.current.loop = true
-    audioRef.current.volume = 0.3
-    // Using a relaxing ambient sound URL
-    audioRef.current.src =
-      "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLZiTYIGGS57OihUBELTKXh8bllHAU2jdXvzn0vBSh+zPDajzsKElyx6OyrWBQLSKHe8sFuJAUuhM/z24k2CBhku+zooVARC0yl4fG5ZRwFNo3V7859LwUofsz=..."
-
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current = null
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    if (audioRef.current) {
-      if (ambientSound) {
-        audioRef.current.play().catch(() => {})
-      } else {
-        audioRef.current.pause()
-      }
-    }
-  }, [ambientSound])
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -96,16 +69,6 @@ export function NeuralCanvas() {
   }
 
   useEffect(() => {
-    const handleKeyPress = (e: KeyboardEvent) => {
-      if (e.key === "h" || e.key === "H" || e.key === "ч" || e.key === "Ч") {
-        setHideUI((prev) => !prev)
-      }
-    }
-    window.addEventListener("keydown", handleKeyPress)
-    return () => window.removeEventListener("keydown", handleKeyPress)
-  }, [])
-
-  useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas) return
 
@@ -115,11 +78,12 @@ export function NeuralCanvas() {
     const resizeCanvas = () => {
       canvas.width = window.innerWidth
       canvas.height = window.innerHeight
+      ctx.fillStyle = `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})`
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
     }
     resizeCanvas()
     window.addEventListener("resize", resizeCanvas)
 
-    // Initialize particles
     const initParticles = () => {
       particlesRef.current = []
       for (let i = 0; i < particleCount[0]; i++) {
@@ -137,7 +101,6 @@ export function NeuralCanvas() {
     }
     initParticles()
 
-    // Mouse events
     const handleMouseMove = (e: MouseEvent) => {
       mouseRef.current.x = e.clientX
       mouseRef.current.y = e.clientY
@@ -153,7 +116,6 @@ export function NeuralCanvas() {
 
     const handleClick = (e: MouseEvent) => {
       if (mode === "burst") {
-        // Create burst effect
         for (let i = 0; i < 20; i++) {
           const angle = (Math.PI * 2 * i) / 20
           const speed = Math.random() * 5 + 2
@@ -176,12 +138,22 @@ export function NeuralCanvas() {
     canvas.addEventListener("mouseup", handleMouseUp)
     canvas.addEventListener("click", handleClick)
 
-    // Animation loop
     const animate = () => {
       if (!isPlaying) return
 
-      ctx.fillStyle = `rgba(0, 0, 0, ${trailLength[0] / 100})`
-      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      const canvas = canvasRef.current
+      if (!canvas) return
+
+      const ctx = canvas.getContext("2d")
+      if (!ctx) return
+
+      if (enableTrails) {
+        ctx.fillStyle = `rgba(${bgColor.r}, ${bgColor.g}, ${bgColor.b}, ${fadeSpeed[0] / 100})`
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+      } else {
+        ctx.fillStyle = `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})`
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+      }
 
       if (breathingMode) {
         breathingRef.current.phase += 0.01
@@ -192,11 +164,9 @@ export function NeuralCanvas() {
 
       const particles = particlesRef.current
 
-      // Update and draw particles
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i]
 
-        // Update position
         p.x += p.vx
         p.y += p.vy
 
@@ -215,7 +185,6 @@ export function NeuralCanvas() {
           p.vy += Math.sin(angle + Math.PI / 2) * rotationSpeed
         }
 
-        // Mouse interaction
         if (mouseRef.current.isDown) {
           const dx = mouseRef.current.x - p.x
           const dy = mouseRef.current.y - p.y
@@ -227,24 +196,20 @@ export function NeuralCanvas() {
           }
         }
 
-        // Boundary check with wrap
         if (p.x < 0) p.x = canvas.width
         if (p.x > canvas.width) p.x = 0
         if (p.y < 0) p.y = canvas.height
         if (p.y > canvas.height) p.y = 0
 
-        // Apply friction
         p.vx *= 0.99
         p.vy *= 0.99
 
-        // Update life
         p.life -= 0.5
         if (p.life <= 0) {
           particles.splice(i, 1)
           continue
         }
 
-        // Color shift
         let particleHue = p.hue
         if (useCustomColors) {
           const t = p.life / p.maxLife
@@ -257,7 +222,6 @@ export function NeuralCanvas() {
         const scaledSize = baseSize * breathingRef.current.scale
         const alpha = (p.life / p.maxLife) * (particleOpacity[0] / 100)
 
-        // Draw particle
         ctx.beginPath()
         ctx.arc(p.x, p.y, scaledSize, 0, Math.PI * 2)
         ctx.fillStyle = `hsla(${particleHue}, 80%, 60%, ${alpha})`
@@ -273,7 +237,6 @@ export function NeuralCanvas() {
         ctx.fill()
       }
 
-      // Draw connections (neural mode)
       if (mode === "neural") {
         ctx.strokeStyle = "rgba(255, 255, 255, 0.1)"
         ctx.lineWidth = 0.5
@@ -294,7 +257,6 @@ export function NeuralCanvas() {
         }
       }
 
-      // Spawn new particles to maintain count
       while (particles.length < particleCount[0]) {
         particles.push({
           x: Math.random() * canvas.width,
@@ -342,7 +304,22 @@ export function NeuralCanvas() {
     useCustomColors,
     primaryHue,
     secondaryHue,
+    enableTrails,
+    fadeSpeed,
+    bgColor,
   ])
+
+  // Clear canvas when background color changes
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext("2d")
+    if (!ctx) return
+
+    // Clear canvas with new background color
+    ctx.fillStyle = `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})`
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+  }, [bgColor])
 
   const handleDownload = () => {
     const canvas = canvasRef.current
@@ -373,6 +350,9 @@ export function NeuralCanvas() {
     setPrimaryHue([180])
     setSecondaryHue([280])
     setMode("neural")
+    setEnableTrails(true)
+    setFadeSpeed([18])
+    setBgColor({ r: 0, g: 0, b: 0 })
   }
 
   const applyPreset = (preset: string) => {
@@ -416,13 +396,27 @@ export function NeuralCanvas() {
     }
   }
 
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if (e.key === "h" || e.key === "H" || e.key === "р" || e.key === "Р") {
+        setHideUI((prev) => !prev)
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyPress)
+    return () => window.removeEventListener("keydown", handleKeyPress)
+  }, [])
+
   return (
     <div className="relative h-full w-full">
-      <canvas ref={canvasRef} className="absolute inset-0 bg-black" />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0"
+        style={{ backgroundColor: `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})` }}
+      />
 
       {!hideUI && (
         <>
-          {/* Header */}
           <div className="absolute top-0 left-0 right-0 p-6 flex items-center justify-between z-10">
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-white">
@@ -442,14 +436,6 @@ export function NeuralCanvas() {
                 className="text-white hover:bg-white/10"
               >
                 {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setAmbientSound(!ambientSound)}
-                className="text-white hover:bg-white/10"
-              >
-                {ambientSound ? <Volume2 className="h-5 w-5" /> : <VolumeX className="h-5 w-5" />}
               </Button>
               <Button variant="ghost" size="icon" onClick={handleReset} className="text-white hover:bg-white/10">
                 <RotateCcw className="h-5 w-5" />
@@ -489,7 +475,6 @@ export function NeuralCanvas() {
             </div>
           </div>
 
-          {/* Mode Selector */}
           <div className="absolute top-24 left-6 z-10 flex flex-col gap-2">
             <Button
               variant={mode === "neural" ? "default" : "outline"}
@@ -533,44 +518,6 @@ export function NeuralCanvas() {
           </div>
 
           {showControls && (
-            <div className="absolute top-24 right-6 z-10 flex flex-col gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset("calm")}
-                className="bg-white/10 text-white border-white/20 hover:bg-white/20"
-              >
-                Calm
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset("meditate")}
-                className="bg-white/10 text-white border-white/20 hover:bg-white/20"
-              >
-                Meditate
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset("energize")}
-                className="bg-white/10 text-white border-white/20 hover:bg-white/20"
-              >
-                Energize
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => applyPreset("cosmic")}
-                className="bg-white/10 text-white border-white/20 hover:bg-white/20"
-              >
-                Cosmic
-              </Button>
-            </div>
-          )}
-
-          {/* Controls Panel */}
-          {showControls && (
             <Card className="absolute bottom-6 left-6 right-6 md:left-auto md:w-96 bg-black/80 backdrop-blur-xl border-white/10 p-6 z-10 max-h-[70vh] overflow-y-auto">
               <div className="space-y-6">
                 <div className="flex gap-2">
@@ -597,6 +544,22 @@ export function NeuralCanvas() {
                     }
                   >
                     Auto Rotate
+                  </Button>
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                  <label className="text-sm font-medium text-white">Motion Blur</label>
+                  <Button
+                    variant={enableTrails ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setEnableTrails(!enableTrails)}
+                    className={
+                      enableTrails
+                        ? "bg-accent text-accent-foreground"
+                        : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+                    }
+                  >
+                    {enableTrails ? "On" : "Off"}
                   </Button>
                 </div>
 
@@ -733,35 +696,89 @@ export function NeuralCanvas() {
                   />
                 </div>
 
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <label className="text-sm font-medium text-white">Trail Length</label>
-                    <span className="text-sm text-white/60">{trailLength[0]}%</span>
-                  </div>
-                  <Slider
-                    value={trailLength}
-                    onValueChange={setTrailLength}
-                    min={1}
-                    max={20}
-                    step={1}
-                    className="[&_[role=slider]]:bg-accent [&_[role=slider]]:border-accent"
-                  />
-                </div>
+                {enableTrails && (
+                  <>
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="text-sm font-medium text-white">Blur Amount</label>
+                        <span className="text-sm text-white/60">{trailLength[0]}%</span>
+                      </div>
+                      <Slider
+                        value={trailLength}
+                        onValueChange={setTrailLength}
+                        min={1}
+                        max={20}
+                        step={1}
+                        className="[&_[role=slider]]:bg-accent [&_[role=slider]]:border-accent"
+                      />
+                    </div>
 
-                <div>
-                  <div className="flex items-center justify-between mb-3">
-                    <label className="text-sm font-medium text-white">Gravity</label>
-                    <span className="text-sm text-white/60">{gravity[0]}</span>
-                  </div>
-                  <Slider
-                    value={gravity}
-                    onValueChange={setGravity}
-                    min={-50}
-                    max={50}
-                    step={5}
-                    className="[&_[role=slider]]:bg-accent [&_[role=slider]]:border-accent"
-                  />
-                </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="text-sm font-medium text-white">Fade Speed</label>
+                        <span className="text-sm text-white/60">{fadeSpeed[0]}%</span>
+                      </div>
+                      <Slider
+                        value={fadeSpeed}
+                        onValueChange={setFadeSpeed}
+                        min={1}
+                        max={50}
+                        step={1}
+                        className="[&_[role=slider]]:bg-accent [&_[role=slider]]:border-accent"
+                      />
+                      <p className="text-xs text-white/40 mt-1">Higher = trails fade faster</p>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-3">
+                        <label className="text-sm font-medium text-white">Background Color</label>
+                        <div
+                          className="w-8 h-8 rounded border border-white/20"
+                          style={{ backgroundColor: `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})` }}
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-white/60 w-6">R</span>
+                          <Slider
+                            value={[bgColor.r]}
+                            onValueChange={(v) => setBgColor({ ...bgColor, r: v[0] })}
+                            min={0}
+                            max={255}
+                            step={1}
+                            className="[&_[role=slider]]:bg-red-500 [&_[role=slider]]:border-red-500"
+                          />
+                          <span className="text-xs text-white/60 w-8 text-right">{bgColor.r}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-white/60 w-6">G</span>
+                          <Slider
+                            value={[bgColor.g]}
+                            onValueChange={(v) => setBgColor({ ...bgColor, g: v[0] })}
+                            min={0}
+                            max={255}
+                            step={1}
+                            className="[&_[role=slider]]:bg-green-500 [&_[role=slider]]:border-green-500"
+                          />
+                          <span className="text-xs text-white/60 w-8 text-right">{bgColor.g}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-white/60 w-6">B</span>
+                          <Slider
+                            value={[bgColor.b]}
+                            onValueChange={(v) => setBgColor({ ...bgColor, b: v[0] })}
+                            min={0}
+                            max={255}
+                            step={1}
+                            className="[&_[role=slider]]:bg-blue-500 [&_[role=slider]]:border-blue-500"
+                          />
+                          <span className="text-xs text-white/60 w-8 text-right">{bgColor.b}</span>
+                        </div>
+                      </div>
+                      <p className="text-xs text-white/40 mt-1">Match this to shadow color to hide trails</p>
+                    </div>
+                  </>
+                )}
 
                 {!useCustomColors && (
                   <div>
@@ -799,16 +816,13 @@ export function NeuralCanvas() {
 
                 <div className="pt-4 border-t border-white/10">
                   <p className="text-xs text-white/60 leading-relaxed">
-                    {mode === "neural" && "Click and drag to attract particles. Watch neural connections form."}
-                    {mode === "flow" && "Click and drag to create flowing particle streams."}
-                    {mode === "burst" && "Click anywhere to create explosive particle bursts."}
+                    {mode === "burst" ? "Click to create bursts" : "Click and drag to interact"}
                   </p>
                 </div>
               </div>
             </Card>
           )}
 
-          {/* Instructions */}
           {!showControls && (
             <div className="absolute bottom-6 left-6 text-white/40 text-sm">
               <p className="text-balance">
