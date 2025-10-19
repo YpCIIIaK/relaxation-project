@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Card } from "@/components/ui/card"
+// Removed Tone.js - using native Web Audio API instead
 import {
   Sparkles,
   Palette,
@@ -14,8 +15,15 @@ import {
   Pause,
   Settings2,
   Maximize,
+  Minimize,
   EyeOff,
+  Eye,
   RefreshCw,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
+  Waves,
 } from "lucide-react"
 
 interface Particle {
@@ -38,7 +46,7 @@ export function NeuralCanvas() {
   const [particleSpeed, setParticleSpeed] = useState([50])
   const [colorShift, setColorShift] = useState([180])
   const [connectionDistance, setConnectionDistance] = useState([150])
-  const [mode, setMode] = useState<"flow" | "burst" | "neural">("neural")
+  const [mode, setMode] = useState<"flow" | "burst" | "neural" | "spiral" | "galaxy" | "wave" | "orbit" | "implode" | "explode" | "aurora" | "ripple" | "constellation">("neural")
   const [glowIntensity, setGlowIntensity] = useState([50])
   const [particleOpacity, setParticleOpacity] = useState([80])
   const [trailLength, setTrailLength] = useState([5])
@@ -53,10 +61,27 @@ export function NeuralCanvas() {
   const [enableTrails, setEnableTrails] = useState(true)
   const [fadeSpeed, setFadeSpeed] = useState([18])
   const [bgColor, setBgColor] = useState({ r: 0, g: 0, b: 0 })
+  const [audioEnabled, setAudioEnabled] = useState(false)
+  const [micEnabled, setMicEnabled] = useState(false)
+  const [audioReactive, setAudioReactive] = useState(false)
+  const [musicEnabled, setMusicEnabled] = useState(false)
+  const [musicVolume, setMusicVolume] = useState([15])
+  const [audioLevel, setAudioLevel] = useState(0)
   const particlesRef = useRef<Particle[]>([])
   const mouseRef = useRef({ x: 0, y: 0, isDown: false })
-  const animationRef = useRef<number>()
+  const animationRef = useRef<number | undefined>(undefined)
   const breathingRef = useRef({ phase: 0, scale: 1 })
+  const audioContextRef = useRef<AudioContext | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const audioDataRef = useRef<Uint8Array>(new Uint8Array(0))
+  const micStreamRef = useRef<MediaStream | null>(null)
+  const micSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  const audioReactiveRef = useRef<boolean>(false)
+  const lastAudioLevelUpdate = useRef<number>(0)
+  const musicContextRef = useRef<AudioContext | null>(null)
+  const oscillatorsRef = useRef<OscillatorNode[]>([])
+  const gainNodesRef = useRef<GainNode[]>([])
+  const musicIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -65,6 +90,282 @@ export function NeuralCanvas() {
     } else {
       document.exitFullscreen()
       setIsFullscreen(false)
+    }
+  }
+
+  const initAudio = async () => {
+    try {
+      const context = new AudioContext()
+      const analyser = context.createAnalyser()
+      analyser.fftSize = 256
+      analyser.smoothingTimeConstant = 0.8
+      
+      audioContextRef.current = context
+      analyserRef.current = analyser
+      audioDataRef.current = new Uint8Array(analyser.frequencyBinCount)
+      
+      setAudioEnabled(true)
+    } catch (err) {
+      console.error('Audio initialization failed:', err)
+    }
+  }
+
+  const toggleMicrophone = async () => {
+    if (!micEnabled) {
+      try {
+        // Создаем новый AudioContext и analyser каждый раз
+        if (!audioContextRef.current || audioContextRef.current.state === 'closed') {
+          await initAudio()
+        }
+        
+        // Возобновляем AudioContext если он приостановлен
+        if (audioContextRef.current?.state === 'suspended') {
+          await audioContextRef.current.resume()
+        }
+        
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        const source = audioContextRef.current!.createMediaStreamSource(stream)
+        source.connect(analyserRef.current!)
+        
+        // Сохраняем stream и source чтобы можно было остановить
+        micStreamRef.current = stream
+        micSourceRef.current = source
+        
+        setMicEnabled(true)
+        setAudioReactive(true)
+        audioReactiveRef.current = true // Обновляем ref для анимации
+      } catch (err) {
+        console.error('❌ Microphone access denied:', err)
+        alert('Microphone access is required for audio reactivity')
+      }
+    } else {
+      // Отключаем source node от analyser
+      if (micSourceRef.current) {
+        try {
+          micSourceRef.current.disconnect()
+        } catch (e) {}
+        micSourceRef.current = null
+      }
+      
+      // Останавливаем все треки микрофона
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(track => track.stop())
+        micStreamRef.current = null
+      }
+      
+      setMicEnabled(false)
+      setAudioReactive(false)
+      audioReactiveRef.current = false // Обновляем ref для анимации
+      setAudioLevel(0)
+    }
+  }
+
+  const initMusic = () => {
+    try {
+      // Create Web Audio context
+      if (!musicContextRef.current) {
+        musicContextRef.current = new AudioContext()
+      }
+      
+      // Stop any existing oscillators
+      stopMusic()
+      
+      return musicContextRef.current
+    } catch (err) {
+      console.error('Music initialization failed:', err)
+      return null
+    }
+  }
+
+  const stopMusic = () => {
+    // Stop all oscillators
+    oscillatorsRef.current.forEach(osc => {
+      try {
+        osc.stop()
+        osc.disconnect()
+      } catch (e) {
+        // Ignore errors
+      }
+    })
+    oscillatorsRef.current = []
+    gainNodesRef.current = []
+    
+    // Clear timeout
+    if (musicIntervalRef.current) {
+      clearTimeout(musicIntervalRef.current as any)
+      musicIntervalRef.current = null
+    }
+  }
+
+  const playNote = (frequency: number, duration: number, volume: number = 0.3) => {
+    const ctx = musicContextRef.current
+    if (!ctx) return
+
+    const oscillator = ctx.createOscillator()
+    const gainNode = ctx.createGain()
+
+    oscillator.connect(gainNode)
+    gainNode.connect(ctx.destination)
+
+    oscillator.frequency.value = frequency
+    oscillator.type = 'sine'
+
+    const now = ctx.currentTime
+    gainNode.gain.setValueAtTime(0, now)
+    gainNode.gain.linearRampToValueAtTime(volume * (musicVolume[0] / 100), now + 0.1)
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration)
+
+    oscillator.start(now)
+    oscillator.stop(now + duration)
+
+    oscillatorsRef.current.push(oscillator)
+    gainNodesRef.current.push(gainNode)
+
+    // Clean up after note ends
+    setTimeout(() => {
+      try {
+        oscillator.disconnect()
+        gainNode.disconnect()
+      } catch (e) {
+        // Ignore
+      }
+    }, duration * 1000 + 100)
+  }
+
+  const playMeditativeNote = (frequency: number, duration: number, volume: number = 0.06) => {
+    const ctx = musicContextRef.current
+    if (!ctx) return
+
+    const now = ctx.currentTime
+    const attackTime = 2.0 // Очень плавное нарастание 2 сек
+    const releaseTime = 4 // ОЧЕНЬ медленное затухание 4 сек
+    const sustainTime = Math.max(duration - attackTime - releaseTime, 0.5)
+
+    // Один чистый осциллятор
+    const oscillator = ctx.createOscillator()
+    const gainNode = ctx.createGain()
+    
+    oscillator.connect(gainNode)
+    gainNode.connect(ctx.destination)
+
+    oscillator.frequency.value = frequency
+    oscillator.type = 'sine' // Чистая sine wave
+
+    const finalVolume = volume * (musicVolume[0] / 100)
+    
+    gainNode.gain.setValueAtTime(0, now)
+    // Плавное нарастание
+    gainNode.gain.linearRampToValueAtTime(finalVolume, now + attackTime)
+    // Sustain
+    gainNode.gain.setValueAtTime(finalVolume, now + attackTime + sustainTime)
+    // Начало затухания - медленно снижаем до 30%
+    gainNode.gain.linearRampToValueAtTime(finalVolume * 0.3, now + attackTime + sustainTime + releaseTime * 0.6)
+    // Финальное затухание - очень плавно до нуля
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration)
+
+    oscillator.start(now)
+    oscillator.stop(now + duration)
+
+    oscillatorsRef.current.push(oscillator)
+    gainNodesRef.current.push(gainNode)
+
+    // Clean up
+    setTimeout(() => {
+      try {
+        oscillator.disconnect()
+        gainNode.disconnect()
+      } catch (e) {
+        // Ignore
+      }
+    }, duration * 1000 + 100)
+  }
+
+  const createAmbientMusic = (currentMode: string) => {
+    stopMusic()
+    
+    const ctx = musicContextRef.current
+    if (!ctx) return
+    
+    // Base frequencies for ambient pads - СРЕДНИЕ частоты без вибраций
+    const baseNotes: { [key: string]: number[] } = {
+      'neural': [130.81, 155.56, 196.0], // C3, Eb3, G3 - спокойный, чистый
+      'spiral': [220.0, 261.63, 329.63], // A3, C4, E4 - легкий, воздушный
+      'galaxy': [87.31, 103.83, 130.81], // F2, Ab2, C3 - глубокий без вибраций
+      'wave': [146.83, 174.61, 220.0], // D3, F3, A3 - плавный, текучий
+      'orbit': [98.0, 130.81, 146.83], // G2, C3, D3 - средний диапазон
+      'burst': [261.63, 329.63, 392.0], // C4, E4, G4 - яркий, чистый
+      'flow': [130.81, 174.61, 196.0], // C3, F3, G3 - сбалансированный
+      'implode': [196.0, 220.0, 261.63], // G3, A3, C4 - напряженный, сжимающийся
+      'explode': [293.66, 349.23, 392.0], // D4, F4, G4 - яркий, расширяющийся
+      'aurora': [164.81, 196.0, 220.0], // E3, G3, A3 - мягкий, северный
+      'ripple': [146.83, 174.61, 196.0], // D3, F3, G3 - спокойный, водный
+      'constellation': [130.81, 164.81, 196.0] // C3, E3, G3 - звездный, тихий
+    }
+    
+    const notes = baseNotes[currentMode] || baseNotes['flow']
+    
+    // Медитативная музыка: отдельные ноты с паузами
+    let noteIndex = 0
+    
+    const playNextNote = () => {
+      const particles = particlesRef.current
+      if (!particles || particles.length === 0) return
+      
+      // Параметры от частиц
+      const particleDensity = Math.min(particleCount[0] / 100, 1)
+      const speed = particleSpeed[0] / 100
+      const glowLevel = glowIntensity[0] / 100
+      
+      // Длительность ноты: 6-8 секунд (долгое затухание)
+      const noteDuration = 6 + glowLevel * 2 // 6-8 сек
+      
+      // Интервал до следующей ноты: 3-5 секунд (следующая начнется пока эта затухает)
+      const nextNoteDelay = 3000 + (1 - speed) * 2000 // 3-5 сек
+      
+      // Громкость - очень тихая для фона
+      const volume = 0.05 * (0.4 + particleDensity * 0.3)
+      
+      // Выбираем ноту из гаммы
+      const frequency = notes[noteIndex % notes.length]
+      
+      // Играем одну ноту
+      playMeditativeNote(frequency, noteDuration, volume)
+      
+      // Иногда играем гармонию (интервал квинта или терция)
+      if (Math.random() < 0.3) {
+        const harmonicInterval = Math.random() < 0.5 ? 2 : 4 // терция или квинта
+        const harmonicFreq = notes[(noteIndex + harmonicInterval) % notes.length]
+        setTimeout(() => {
+          playMeditativeNote(harmonicFreq, noteDuration, volume * 0.5)
+        }, 200)
+      }
+      
+      // Переход к следующей ноте (шаг 1-2 ноты)
+      noteIndex += Math.random() < 0.7 ? 1 : 2
+      
+      // Следующая нота начинается пока предыдущая затухает (overlap)
+      musicIntervalRef.current = setTimeout(playNextNote, nextNoteDelay) as any
+    }
+    
+    // Начинаем с первой ноты
+    playNextNote()
+  }
+
+  const toggleMusic = () => {
+    if (!musicEnabled) {
+      try {
+        const ctx = initMusic()
+        if (ctx && ctx.state === 'suspended') {
+          ctx.resume()
+        }
+        createAmbientMusic(mode)
+        setMusicEnabled(true)
+      } catch (err) {
+        console.error('Failed to start music:', err)
+      }
+    } else {
+      stopMusic()
+      setMusicEnabled(false)
     }
   }
 
@@ -162,6 +463,45 @@ export function NeuralCanvas() {
         breathingRef.current.scale = 1
       }
 
+      // Audio analysis
+      let bassLevel = 0
+      let midLevel = 0
+      let trebleLevel = 0
+      let overallVolume = 0
+      
+      // Отладка: проверяем условия
+      const isAudioReactive = audioReactiveRef.current
+      
+      if (isAudioReactive && analyserRef.current && audioDataRef.current) {
+        try {
+          analyserRef.current.getByteFrequencyData(audioDataRef.current)
+          const data = audioDataRef.current
+          
+          // Вычисляем уровни частот
+          const bassData = data.slice(0, 10)
+          const midData = data.slice(10, 50)
+          const trebleData = data.slice(50, 100)
+          
+          bassLevel = bassData.reduce((a, b) => a + b, 0) / 10 / 255
+          midLevel = midData.reduce((a, b) => a + b, 0) / 40 / 255
+          trebleLevel = trebleData.reduce((a, b) => a + b, 0) / 50 / 255
+          
+          // Общая громкость для реактивного glow
+          overallVolume = (bassLevel + midLevel + trebleLevel) / 3
+          
+          // Обновляем индикатор уровня звука для UI (throttle: раз в 100мс)
+          const now = Date.now()
+          if (now - lastAudioLevelUpdate.current > 100) {
+            setAudioLevel(Math.round(overallVolume * 100))
+            lastAudioLevelUpdate.current = now
+          }
+        } catch (e) {
+          console.error('❌ Audio analysis error:', e)
+        }
+      } else {
+        setAudioLevel(0)
+      }
+
       const particles = particlesRef.current
 
       for (let i = particles.length - 1; i >= 0; i--) {
@@ -174,7 +514,237 @@ export function NeuralCanvas() {
           p.vy += gravity[0] / 1000
         }
 
-        if (autoRotate) {
+        // Mode-specific behaviors
+        if (mode === "spiral") {
+          // ВОДОВОРОТ - сильное затягивание к центру по спирали
+          const centerX = canvas.width / 2
+          const centerY = canvas.height / 2
+          const dx = p.x - centerX
+          const dy = p.y - centerY
+          const angle = Math.atan2(dy, dx)
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          
+          // Очень сильное вращение (быстрее ближе к центру)
+          const spiralSpeed = Math.min(250 / (distance + 10), 0.2)
+          
+          // СИЛЬНОЕ притяжение к центру - водоворот затягивает!
+          const inwardSpeed = Math.min(distance * 0.0003, 0.05)
+          
+          // Вращательная сила
+          p.vx += Math.cos(angle + Math.PI / 2) * spiralSpeed
+          p.vy += Math.sin(angle + Math.PI / 2) * spiralSpeed
+          
+          // Сильная сила затягивания к центру
+          p.vx += (dx / distance) * -inwardSpeed
+          p.vy += (dy / distance) * -inwardSpeed
+          
+          // Меньше затухание для более динамичного водоворота
+          p.vx *= 0.97
+          p.vy *= 0.97
+        } else if (mode === "galaxy") {
+          // ГАЛАКТИКА - спиральные рукава с разной скоростью
+          const centerX = canvas.width / 2
+          const centerY = canvas.height / 2
+          const dx = p.x - centerX
+          const dy = p.y - centerY
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          const angle = Math.atan2(dy, dx)
+          
+          // Скорость зависит от расстояния (дальше = медленнее, как в реальной галактике)
+          const rotationSpeed = Math.min(200 / Math.sqrt(distance + 50), 0.12)
+          
+          // Спиральные рукава - добавляем волну к углу
+          const armCount = 3 // Количество спиральных рукавов
+          const armStrength = Math.sin(angle * armCount - distance * 0.01) * 0.02
+          
+          // Вращательная сила + эффект спиральных рукавов
+          p.vx += Math.cos(angle + Math.PI / 2) * (rotationSpeed + armStrength)
+          p.vy += Math.sin(angle + Math.PI / 2) * (rotationSpeed + armStrength)
+          
+          // ОЧЕНЬ слабое притяжение к центру (галактика стабильна)
+          const inwardPull = 0.00008
+          p.vx += (dx / distance) * -inwardPull
+          p.vy += (dy / distance) * -inwardPull
+          
+          // Небольшое сопротивление для плавности
+          p.vx *= 0.96
+          p.vy *= 0.96
+        } else if (mode === "wave") {
+          const time = Date.now() * 0.002
+          const waveFrequency = 0.008
+          const waveAmplitude = 1.5
+          
+          // Create flowing wave patterns
+          const waveX = Math.sin(p.y * waveFrequency + time) * waveAmplitude
+          const waveY = Math.cos(p.x * waveFrequency + time * 0.7) * waveAmplitude
+          
+          // Add secondary wave for complexity
+          const wave2X = Math.sin(p.y * waveFrequency * 2 + time * 1.5) * waveAmplitude * 0.5
+          const wave2Y = Math.cos(p.x * waveFrequency * 2 + time * 1.2) * waveAmplitude * 0.5
+          
+          p.vx += (waveX + wave2X) * 0.3
+          p.vy += (waveY + wave2Y) * 0.3
+          
+          // Slight dampening for smoother motion
+          p.vx *= 0.96
+          p.vy *= 0.96
+        } else if (mode === "orbit") {
+          const mouseX = mouseRef.current.x
+          const mouseY = mouseRef.current.y
+          const dx = p.x - mouseX
+          const dy = p.y - mouseY
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          // Увеличенный радиус взаимодействия только для orbit
+          if (distance > 30 && distance < 600) {
+            const angle = Math.atan2(dy, dx)
+            const orbitSpeed = 100 / distance * 0.05
+            p.vx += Math.cos(angle + Math.PI / 2) * orbitSpeed
+            p.vy += Math.sin(angle + Math.PI / 2) * orbitSpeed
+          }
+        } else if (mode === "implode") {
+          // ТУННЕЛЬ ВНУТРЬ - частицы летят к центру по спирали
+          const centerX = canvas.width / 2
+          const centerY = canvas.height / 2
+          const dx = p.x - centerX
+          const dy = p.y - centerY
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          const angle = Math.atan2(dy, dx)
+          
+          // Сила притяжения к центру (сильнее на расстоянии)
+          const pullStrength = Math.min(distance * 0.0004, 0.08)
+          
+          // Спиральное движение к центру (эффект туннеля)
+          const spiralAngle = angle + Math.PI / 2
+          const spiralStrength = 0.03
+          
+          // Движение к центру + спираль
+          p.vx += -dx / distance * pullStrength + Math.cos(spiralAngle) * spiralStrength
+          p.vy += -dy / distance * pullStrength + Math.sin(spiralAngle) * spiralStrength
+          
+          // Ускорение ближе к центру (эффект туннеля)
+          if (distance < 100) {
+            const boost = (100 - distance) / 100 * 0.05
+            p.vx += -dx / distance * boost
+            p.vy += -dy / distance * boost
+          }
+          
+          p.vx *= 0.98
+          p.vy *= 0.98
+        } else if (mode === "explode") {
+          // ТУННЕЛЬ НАРУЖУ - частицы летят от центра по спирали
+          const centerX = canvas.width / 2
+          const centerY = canvas.height / 2
+          const dx = p.x - centerX
+          const dy = p.y - centerY
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          const angle = Math.atan2(dy, dx)
+          
+          // РЕСПАУН в центре: частицы возвращаются в центр когда улетают далеко
+          const maxDistance = Math.max(canvas.width, canvas.height) * 0.6
+          if (distance > maxDistance) {
+            // Возвращаем частицу в центр с небольшим случайным разбросом
+            const spawnRadius = 20
+            const randomAngle = Math.random() * Math.PI * 2
+            p.x = centerX + Math.cos(randomAngle) * spawnRadius
+            p.y = centerY + Math.sin(randomAngle) * spawnRadius
+            
+            // Начальная скорость от центра
+            const initialSpeed = 0.5 + Math.random() * 0.5
+            p.vx = Math.cos(randomAngle) * initialSpeed
+            p.vy = Math.sin(randomAngle) * initialSpeed
+          }
+          
+          // Сила отталкивания от центра (сильнее у центра)
+          const pushStrength = Math.min(300 / (distance + 20), 0.1)
+          
+          // Спиральное движение от центра (эффект туннеля)
+          const spiralAngle = angle + Math.PI / 2
+          const spiralStrength = 0.04
+          
+          // Движение от центра + спираль
+          p.vx += dx / distance * pushStrength + Math.cos(spiralAngle) * spiralStrength
+          p.vy += dy / distance * pushStrength + Math.sin(spiralAngle) * spiralStrength
+          
+          // Дополнительное ускорение в центре (эффект взрыва)
+          if (distance < 150) {
+            const boost = (150 - distance) / 150 * 0.08
+            p.vx += dx / distance * boost
+            p.vy += dy / distance * boost
+          }
+          
+          p.vx *= 0.97
+          p.vy *= 0.97
+        } else if (mode === "aurora") {
+          // АВРОРА - плавные волны северного сияния
+          const time = Date.now() * 0.0003
+          const waveFreq = 0.004
+          const waveAmp = 0.8
+          
+          // Медленные вертикальные волны
+          const wave1X = Math.sin(p.y * waveFreq + time) * waveAmp
+          const wave1Y = Math.cos(p.x * waveFreq * 0.5 + time * 0.5) * waveAmp * 0.3
+          
+          // Вторая волна для глубины
+          const wave2X = Math.sin(p.y * waveFreq * 1.5 + time * 1.3) * waveAmp * 0.5
+          const wave2Y = Math.cos(p.x * waveFreq * 0.8 + time * 0.7) * waveAmp * 0.2
+          
+          p.vx += (wave1X + wave2X) * 0.2
+          p.vy += (wave1Y + wave2Y) * 0.2
+          
+          // Плавное движение вверх (как сияние)
+          p.vy -= 0.1
+          if (p.y < 0) p.y = canvas.height
+          
+          p.vx *= 0.98
+          p.vy *= 0.98
+        } else if (mode === "ripple") {
+          // РЯБЬ - концентрические круги от центра
+          const centerX = canvas.width / 2
+          const centerY = canvas.height / 2
+          const dx = p.x - centerX
+          const dy = p.y - centerY
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          const angle = Math.atan2(dy, dx)
+          
+          // Пульсация от центра
+          const time = Date.now() * 0.001
+          const ripple = Math.sin(distance * 0.03 - time * 2) * 0.3
+          
+          // Движение по кругу + пульсация
+          p.vx += Math.cos(angle) * ripple * 0.1
+          p.vy += Math.sin(angle) * ripple * 0.1
+          
+          // Медленное вращение
+          const rotateSpeed = 0.015
+          p.vx += Math.cos(angle + Math.PI / 2) * rotateSpeed
+          p.vy += Math.sin(angle + Math.PI / 2) * rotateSpeed
+          
+          p.vx *= 0.96
+          p.vy *= 0.96
+        } else if (mode === "constellation") {
+          // СОЗВЕЗДИЕ - медленное дрейфование звезд
+          const centerX = canvas.width / 2
+          const centerY = canvas.height / 2
+          const dx = p.x - centerX
+          const dy = p.y - centerY
+          const distance = Math.sqrt(dx * dx + dy * dy)
+          
+          // Очень слабое притяжение к центру
+          const centerPull = 0.00005
+          p.vx += -(dx / distance) * centerPull * distance
+          p.vy += -(dy / distance) * centerPull * distance
+          
+          // Медленное плавное движение
+          const time = Date.now() * 0.0002
+          p.vx += Math.sin(time + p.hue) * 0.05
+          p.vy += Math.cos(time + p.hue * 0.7) * 0.05
+          
+          // Сильное затухание для очень плавного движения
+          p.vx *= 0.98
+          p.vy *= 0.98
+        }
+
+        if (autoRotate && mode === "neural") {
           const centerX = canvas.width / 2
           const centerY = canvas.height / 2
           const dx = p.x - centerX
@@ -218,18 +788,29 @@ export function NeuralCanvas() {
           particleHue = (p.hue + colorShift[0]) % 360
         }
 
+        // Audio-reactive modifications
+        if (isAudioReactive) {
+          particleHue = (particleHue + trebleLevel * 60) % 360
+        }
+
         const baseSize = (p.size * particleSize[0]) / 50
-        const scaledSize = baseSize * breathingRef.current.scale
-        const alpha = (p.life / p.maxLife) * (particleOpacity[0] / 100)
+        const audioSizeMultiplier = isAudioReactive ? (1 + bassLevel * 2) : 1
+        const scaledSize = baseSize * breathingRef.current.scale * audioSizeMultiplier
+        const audioAlphaBoost = isAudioReactive ? (midLevel * 0.5) : 0
+        const alpha = ((p.life / p.maxLife) * (particleOpacity[0] / 100)) + audioAlphaBoost
 
         ctx.beginPath()
         ctx.arc(p.x, p.y, scaledSize, 0, Math.PI * 2)
         ctx.fillStyle = `hsla(${particleHue}, 80%, 60%, ${alpha})`
         ctx.fill()
 
-        const glowSize = scaledSize * 3 * (glowIntensity[0] / 50)
+        // Реактивное свечение: громкость звука влияет на glow intensity
+        const audioGlowBoost = isAudioReactive ? (overallVolume * 100) : 0 // 0-100 бонус
+        const reactiveGlowIntensity = glowIntensity[0] + audioGlowBoost
+        
+        const glowSize = scaledSize * 3 * (reactiveGlowIntensity / 50)
         const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, glowSize)
-        gradient.addColorStop(0, `hsla(${particleHue}, 80%, 60%, ${alpha * 0.5 * (glowIntensity[0] / 100)})`)
+        gradient.addColorStop(0, `hsla(${particleHue}, 80%, 60%, ${alpha * 0.5 * (reactiveGlowIntensity / 100)})`)
         gradient.addColorStop(1, `hsla(${particleHue}, 80%, 60%, 0)`)
         ctx.fillStyle = gradient
         ctx.beginPath()
@@ -253,6 +834,91 @@ export function NeuralCanvas() {
               ctx.lineTo(particles[j].x, particles[j].y)
               ctx.stroke()
             }
+          }
+        }
+      } else if (mode === "aurora") {
+        // АВРОРА - плавные градиентные линии
+        ctx.lineWidth = 1
+        
+        for (let i = 0; i < particles.length; i++) {
+          for (let j = i + 1; j < particles.length; j++) {
+            const dx = particles[i].x - particles[j].x
+            const dy = particles[i].y - particles[j].y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            
+            if (dist < connectionDistance[0]) {
+              const alpha = (1 - dist / connectionDistance[0]) * 0.4
+              
+              // Плавный градиент цветов (зеленый-синий-фиолетовый)
+              const hue = 120 + (particles[i].y / canvas.height) * 80
+              ctx.strokeStyle = `hsla(${hue}, 70%, 60%, ${alpha})`
+              
+              ctx.beginPath()
+              ctx.moveTo(particles[i].x, particles[i].y)
+              ctx.lineTo(particles[j].x, particles[j].y)
+              ctx.stroke()
+            }
+          }
+        }
+      } else if (mode === "ripple") {
+        // РЯБЬ - концентрические круговые волны
+        ctx.lineWidth = 1
+        const centerX = canvas.width / 2
+        const centerY = canvas.height / 2
+        
+        for (let i = 0; i < particles.length; i++) {
+          for (let j = i + 1; j < particles.length; j++) {
+            const dist1 = Math.sqrt((particles[i].x - centerX) ** 2 + (particles[i].y - centerY) ** 2)
+            const dist2 = Math.sqrt((particles[j].x - centerX) ** 2 + (particles[j].y - centerY) ** 2)
+            const distDiff = Math.abs(dist1 - dist2)
+            
+            // Соединяем частицы на одном радиусе (концентрические кольца)
+            if (distDiff < 40) {
+              const dx = particles[i].x - particles[j].x
+              const dy = particles[i].y - particles[j].y
+              const dist = Math.sqrt(dx * dx + dy * dy)
+              if (dist < 200) {
+                const alpha = (1 - dist / 200) * 0.4
+                const hue = 180 + (dist1 / 5) % 60
+                ctx.strokeStyle = `hsla(${hue}, 60%, 65%, ${alpha})`
+                ctx.beginPath()
+                ctx.moveTo(particles[i].x, particles[i].y)
+                ctx.lineTo(particles[j].x, particles[j].y)
+                ctx.stroke()
+              }
+            }
+          }
+        }
+      } else if (mode === "constellation") {
+        // СОЗВЕЗДИЕ - редкие линии только между самыми близкими звездами
+        ctx.lineWidth = 1.5
+        
+        // Для каждой частицы находим только САМУЮ близкую
+        for (let i = 0; i < particles.length; i++) {
+          let closestDist = Infinity
+          let closestIndex = -1
+          
+          // Находим ближайшую звезду
+          for (let j = 0; j < particles.length; j++) {
+            if (i === j) continue
+            const dx = particles[i].x - particles[j].x
+            const dy = particles[i].y - particles[j].y
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            
+            if (dist < closestDist && dist < connectionDistance[0] * 0.8) {
+              closestDist = dist
+              closestIndex = j
+            }
+          }
+          
+          // Рисуем связь только с ближайшей звездой (и только если i < j чтобы не дублировать)
+          if (closestIndex !== -1 && i < closestIndex) {
+            const alpha = (1 - closestDist / (connectionDistance[0] * 0.8)) * 0.5
+            ctx.strokeStyle = `rgba(180, 200, 255, ${alpha})`
+            ctx.beginPath()
+            ctx.moveTo(particles[i].x, particles[i].y)
+            ctx.lineTo(particles[closestIndex].x, particles[closestIndex].y)
+            ctx.stroke()
           }
         }
       }
@@ -286,6 +952,8 @@ export function NeuralCanvas() {
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current)
       }
+      // НЕ останавливаем микрофон здесь - это делается в toggleMicrophone
+      // Микрофон нужно остановить только при полном размонтировании компонента
     }
   }, [
     isPlaying,
@@ -307,7 +975,25 @@ export function NeuralCanvas() {
     enableTrails,
     fadeSpeed,
     bgColor,
+    // audioReactive не нужен здесь - анимация читает текущее значение напрямую
   ])
+
+  // Cleanup microphone on component unmount only
+  useEffect(() => {
+    return () => {
+      // Останавливаем микрофон только при размонтировании компонента
+      if (micSourceRef.current) {
+        try {
+          micSourceRef.current.disconnect()
+        } catch (e) {}
+        micSourceRef.current = null
+      }
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach(track => track.stop())
+        micStreamRef.current = null
+      }
+    }
+  }, []) // Empty deps = runs only on mount/unmount
 
   // Clear canvas when background color changes
   useEffect(() => {
@@ -320,6 +1006,20 @@ export function NeuralCanvas() {
     ctx.fillStyle = `rgb(${bgColor.r}, ${bgColor.g}, ${bgColor.b})`
     ctx.fillRect(0, 0, canvas.width, canvas.height)
   }, [bgColor])
+
+  // Change music when mode changes
+  useEffect(() => {
+    if (musicEnabled) {
+      createAmbientMusic(mode)
+    }
+  }, [mode, musicEnabled])
+
+  // Restart music when volume changes to apply new volume immediately
+  useEffect(() => {
+    if (musicEnabled) {
+      createAmbientMusic(mode)
+    }
+  }, [musicVolume])
 
   const handleDownload = () => {
     const canvas = canvasRef.current
@@ -453,7 +1153,25 @@ export function NeuralCanvas() {
                 <Download className="h-5 w-5" />
               </Button>
               <Button variant="ghost" size="icon" onClick={toggleFullscreen} className="text-white hover:bg-white/10">
-                <Maximize className="h-5 w-5" />
+                {isFullscreen ? <Minimize className="h-5 w-5" /> : <Maximize className="h-5 w-5" />}
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={toggleMicrophone} 
+                className={`text-white hover:bg-white/10 ${audioReactive ? 'bg-white/20' : ''}`}
+                title="Toggle audio reactivity"
+              >
+                {micEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                onClick={toggleMusic} 
+                className={`text-white hover:bg-white/10 ${musicEnabled ? 'bg-white/20' : ''}`}
+                title="Toggle ambient music"
+              >
+                {musicEnabled ? <Volume2 className="h-5 w-5" /> : <VolumeX className="h-5 w-5" />}
               </Button>
               <Button
                 variant="ghost"
@@ -515,6 +1233,123 @@ export function NeuralCanvas() {
               <Palette className="h-4 w-4 mr-2" />
               Burst
             </Button>
+            <Button
+              variant={mode === "spiral" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("spiral")}
+              className={
+                mode === "spiral"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <RefreshCw className="h-4 w-4 mr-2" />
+              Spiral
+            </Button>
+            <Button
+              variant={mode === "galaxy" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("galaxy")}
+              className={
+                mode === "galaxy"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <Sparkles className="h-4 w-4 mr-2" />
+              Galaxy
+            </Button>
+            <Button
+              variant={mode === "wave" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("wave")}
+              className={
+                mode === "wave"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <Zap className="h-4 w-4 mr-2" />
+              Wave
+            </Button>
+            <Button
+              variant={mode === "orbit" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("orbit")}
+              className={
+                mode === "orbit"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <RotateCcw className="h-4 w-4 mr-2" />
+              Orbit
+            </Button>
+            <Button
+              variant={mode === "implode" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("implode")}
+              className={
+                mode === "implode"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <Minimize className="h-4 w-4 mr-2" />
+              Implode
+            </Button>
+            <Button
+              variant={mode === "explode" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("explode")}
+              className={
+                mode === "explode"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <Maximize className="h-4 w-4 mr-2" />
+              Explode
+            </Button>
+            <Button
+              variant={mode === "aurora" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("aurora")}
+              className={
+                mode === "aurora"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <span className="mr-2">🌄</span>
+              Aurora
+            </Button>
+            <Button
+              variant={mode === "ripple" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("ripple")}
+              className={
+                mode === "ripple"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <span className="mr-2">🌊</span>
+              Ripple
+            </Button>
+            <Button
+              variant={mode === "constellation" ? "default" : "outline"}
+              size="sm"
+              onClick={() => setMode("constellation")}
+              className={
+                mode === "constellation"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+              }
+            >
+              <span className="mr-2">✨</span>
+              Constellation
+            </Button>
           </div>
 
           {showControls && (
@@ -546,6 +1381,79 @@ export function NeuralCanvas() {
                     Auto Rotate
                   </Button>
                 </div>
+
+                <div className="pt-2 border-t border-white/10 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium text-white">Audio Reactive</label>
+                    <Button
+                      variant={audioReactive ? "default" : "outline"}
+                      size="sm"
+                      onClick={toggleMicrophone}
+                      className={
+                        audioReactive
+                          ? "bg-accent text-accent-foreground"
+                          : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+                      }
+                    >
+                      <Waves className="h-4 w-4 mr-1" />
+                      {audioReactive ? "On" : "Off"}
+                    </Button>
+                  </div>
+                  {audioReactive && (
+                    <div className="space-y-2">
+                      <p className="text-xs text-white/60 leading-relaxed">
+                        🎤 Microphone active - glow pulses with sound volume!
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-white/40">Level:</span>
+                        <div className="flex-1 h-2 bg-white/10 rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all duration-100"
+                            style={{ width: `${audioLevel}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-white/60 min-w-[3ch]">{audioLevel}%</span>
+                      </div>
+                      <p className="text-xs text-white/40 italic leading-relaxed">
+                        💡 If not working: check microphone settings in your browser (microphone icon in address bar)
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between pt-2 border-t border-white/10">
+                  <label className="text-sm font-medium text-white">Ambient Music</label>
+                  <Button
+                    variant={musicEnabled ? "default" : "outline"}
+                    size="sm"
+                    onClick={toggleMusic}
+                    className={
+                      musicEnabled
+                        ? "bg-accent text-accent-foreground"
+                        : "bg-white/10 text-white border-white/20 hover:bg-white/20"
+                    }
+                  >
+                    <Volume2 className="h-4 w-4 mr-1" />
+                    {musicEnabled ? "On" : "Off"}
+                  </Button>
+                </div>
+
+                {musicEnabled && (
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="text-sm font-medium text-white">Music Volume</label>
+                      <span className="text-sm text-white/60">{musicVolume[0]}%</span>
+                    </div>
+                    <Slider
+                      value={musicVolume}
+                      onValueChange={setMusicVolume}
+                      min={0}
+                      max={100}
+                      step={5}
+                      className="[&_[role=slider]]:bg-accent [&_[role=slider]]:border-accent"
+                    />
+                  </div>
+                )}
 
                 <div className="flex items-center justify-between pt-2 border-t border-white/10">
                   <label className="text-sm font-medium text-white">Motion Blur</label>
@@ -816,7 +1724,31 @@ export function NeuralCanvas() {
 
                 <div className="pt-4 border-t border-white/10">
                   <p className="text-xs text-white/60 leading-relaxed">
-                    {mode === "burst" ? "Click to create bursts" : "Click and drag to interact"}
+                    {audioReactive 
+                      ? "🎵 Particles react to sound! Make some noise or play music"
+                      : musicEnabled
+                      ? `🧘 Meditative notes with pauses (2-8s) - calming intervals, 40-60 BPM`
+                      : mode === "burst" 
+                      ? "Click to create bursts" 
+                      : mode === "orbit" 
+                      ? "Move mouse to create orbital motion"
+                      : mode === "spiral"
+                      ? "Vortex effect - particles spiral rapidly into center"
+                      : mode === "galaxy"
+                      ? "3-arm spiral galaxy with realistic rotation speed"
+                      : mode === "wave"
+                      ? "Sine wave particle motion"
+                      : mode === "implode"
+                      ? "Tunnel effect - particles spiral into center"
+                      : mode === "explode"
+                      ? "Supernova effect - particles burst from center"
+                      : mode === "aurora"
+                      ? "Northern lights - smooth flowing gradient waves"
+                      : mode === "ripple"
+                      ? "Water ripples - concentric rings from center"
+                      : mode === "constellation"
+                      ? "Star field - sparse connections like night sky"
+                      : "Click and drag to interact"}
                   </p>
                 </div>
               </div>
@@ -826,7 +1758,29 @@ export function NeuralCanvas() {
           {!showControls && (
             <div className="absolute bottom-6 left-6 text-white/40 text-sm">
               <p className="text-balance">
-                {mode === "burst" ? "Click to create bursts" : "Click and drag to interact"}
+                {audioReactive 
+                  ? "🎵 Audio reactive mode - particles respond to sound"
+                  : mode === "burst" 
+                  ? "Click to create bursts" 
+                  : mode === "orbit" 
+                  ? "Move mouse to create orbital motion"
+                  : mode === "spiral"
+                  ? "Vortex effect - particles spiral rapidly into center"
+                  : mode === "galaxy"
+                  ? "3-arm spiral galaxy with realistic rotation speed"
+                  : mode === "wave"
+                  ? "Sine wave particle motion"
+                  : mode === "implode"
+                  ? "Tunnel effect - particles spiral into center"
+                  : mode === "explode"
+                  ? "Supernova effect - particles burst from center"
+                  : mode === "aurora"
+                  ? "Northern lights - smooth flowing gradient waves"
+                  : mode === "ripple"
+                  ? "Water ripples - concentric rings from center"
+                  : mode === "constellation"
+                  ? "Star field - sparse connections like night sky"
+                  : "Click and drag to interact"}
               </p>
             </div>
           )}
